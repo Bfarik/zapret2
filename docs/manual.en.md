@@ -2619,9 +2619,9 @@ Performs a linear search in table `a` for value `v`. `array_field_search` assume
 function in_list(s, v)
 ```
 
-### find_next_line
-
 Checks whether string `v` is included in a comma-separated list of strings `s`. For example, `abc` is included in the list `xyz,abc,12345`.
+
+### find_next_line
 
 ```
 function find_next_line(s, pos)
