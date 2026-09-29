@@ -26,6 +26,8 @@ jobs:
             tool: aarch64-unknown-linux-musl
           - arch: arm
             tool: armv6-unknown-linux-musleabi
+          - arch: arm_xscale
+            tool: arm-buildroot-linux-musleabi
           - arch: mips64
             tool: mips64-unknown-linux-musl
           - arch: mipselsf
@@ -62,7 +64,11 @@ jobs:
         run: |
           sudo dpkg --add-architecture i386
           sudo apt update -qq
-          if [[ "$ARCH" == lexra ]]; then
+          if [[ "$ARCH" == arm_xscale ]]; then
+            sudo apt install -y pigz libcap-dev
+            URL=https://toolchains.bootlin.com/downloads/releases/toolchains/armv5-eabi/tarballs/armv5-eabi--musl--stable-2024.02-1.tar.bz2
+            DIR=armv5-eabi--musl--stable-2024.02-1
+          elif [[ "$ARCH" == lexra ]]; then
             sudo apt install -y pigz libcap-dev libc6:i386 zlib1g:i386
             URL=https://github.com/$REPO/raw/refs/heads/master/$DIR.txz
           else
@@ -71,7 +77,11 @@ jobs:
             URL=https://github.com/$REPO/releases/download/latest/$TOOL.tar.xz
           fi
           mkdir -p $HOME/tools
-          wget -qO- $URL | tar -C $HOME/tools -xJ || exit 1
+          if [[ "$ARCH" == arm_xscale ]]; then
+            wget -qO- $URL | tar -C $HOME/tools -xj || exit 1
+          else
+            wget -qO- $URL | tar -C $HOME/tools -xJ || exit 1
+          fi
           [[ -d "$HOME/tools/$DIR/bin" ]] && echo "$HOME/tools/$DIR/bin" >> $GITHUB_PATH
 
       - name: Build
@@ -108,6 +118,9 @@ jobs:
             arm)
               CPU="-mcpu=arm1176jzf-s -mthumb"
               ;;
+            arm_xscale)
+              CPU="-mcpu=xscale -msoft-float"
+              ;;
             arm64|mips64)
               # not safe without GC64
               SYSMALLOC=
@@ -115,7 +128,7 @@ jobs:
           esac
           MINSIZE="$OPTIMIZE $MINSIZE"
 
-          if [[ "$ARCH" == lexra ]] || [[ "$ARCH" == riscv64 ]] || [[ "$ARCH" == x86 ]] ; then
+          if [[ "$ARCH" == lexra ]] || [[ "$ARCH" == riscv64 ]] || [[ "$ARCH" == x86 ]] || [[ "$ARCH" == arm_xscale ]] ; then
             # use classic lua
             wget -qO- https://www.lua.org/ftp/lua-${LUA_RELEASE}.tar.gz | tar -xz
             (
@@ -570,6 +583,7 @@ jobs:
                 *-android-x86_64 )      run_dir android-x86_64 ;;
                 *-freebsd-x86_64 )      run_dir freebsd-x86_64 ;;
                 *-linux-arm )           run_dir linux-arm ;;
+                *-linux-arm_xscale )    run_dir linux-arm_xscale ;;
                 *-linux-arm64 )         run_dir linux-arm64 ;;
                 *-linux-mips64 )        run_dir linux-mips64 ;;
                 *-linux-mipselsf )      run_dir linux-mipsel ;;
