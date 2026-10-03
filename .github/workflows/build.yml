@@ -130,13 +130,19 @@ jobs:
               ;;
           esac
           MINSIZE="$OPTIMIZE $MINSIZE"
+          DEP_CFLAGS="$CPU $MINSIZE $CFLAGS"
+          DEP_LDFLAGS="$LDMINSIZE $LDFLAGS"
+          if [[ "$ARCH" == arm_xscale ]]; then
+            DEP_CFLAGS="$CPU $OPTIMIZE -ffunction-sections -fdata-sections $CFLAGS"
+            DEP_LDFLAGS="$LDFLAGS"
+          fi
 
           if [[ "$ARCH" == lexra ]] || [[ "$ARCH" == riscv64 ]] || [[ "$ARCH" == x86 ]] || [[ "$ARCH" == arm_xscale ]] ; then
             # use classic lua
             wget -qO- https://www.lua.org/ftp/lua-${LUA_RELEASE}.tar.gz | tar -xz
             (
               cd lua-${LUA_RELEASE}
-              make CC=$CC AR="$AR rc" CFLAGS="$CPU $MINSIZE $CFLAGS" LDFLAGS="$LDMINSIZE $LDFLAGS" linux -j$(nproc)
+              make CC=$CC AR="$AR rc" CFLAGS="$DEP_CFLAGS" LDFLAGS="$DEP_LDFLAGS" linux -j$(nproc)
               make install INSTALL_TOP=$DEPS_DIR INSTALL_BIN=$DEPS_DIR/bin INSTALL_INC=$DEPS_DIR/include/lua${LUA_VER} INSTALL_LIB=$DEPS_DIR/lib
             )
             LJIT=0
@@ -171,8 +177,8 @@ jobs:
           for i in libmnl libnfnetlink libnetfilter_queue ; do
             (
               cd $i-*
-              CFLAGS="$CPU $MINSIZE $CFLAGS" \
-              LDFLAGS="$LDMINSIZE $LDFLAGS" \
+              CFLAGS="$DEP_CFLAGS" \
+              LDFLAGS="$DEP_LDFLAGS" \
               ./configure --prefix= --host=$TARGET --enable-static --disable-shared --disable-dependency-tracking
               make install -j$(nproc) DESTDIR=$DEPS_DIR
             )
@@ -184,7 +190,7 @@ jobs:
             xargs -I{} wget -qO- https://github.com/madler/zlib/archive/refs/tags/{}.tar.gz | tar -xz
           (
             cd zlib-*
-            CFLAGS="$CPU $MINSIZE $CFLAGS" \
+            CFLAGS="$DEP_CFLAGS" \
             ./configure --prefix= --static
             make install -j$(nproc) DESTDIR=$DEPS_DIR
           )
