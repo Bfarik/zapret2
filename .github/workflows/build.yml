@@ -65,7 +65,7 @@ jobs:
           sudo dpkg --add-architecture i386
           sudo apt update -qq
           if [[ "$ARCH" == arm_xscale ]]; then
-            sudo apt install -y pigz libcap-dev
+            sudo apt install -y pigz libcap-dev pkg-config
             URL=https://toolchains.bootlin.com/downloads/releases/toolchains/armv5-eabi/tarballs/armv5-eabi--musl--stable-2024.02-1.tar.bz2
             DIR=armv5-eabi--musl--stable-2024.02-1
           elif [[ "$ARCH" == lexra ]]; then
@@ -107,6 +107,9 @@ jobs:
           export AR=$TARGET-ar
           export NM=$TARGET-nm
           export STRIP=$TARGET-strip
+          if [[ "$ARCH" == arm_xscale ]]; then
+            export PKG_CONFIG=/usr/bin/pkg-config
+          fi
           export PKG_CONFIG_PATH=$DEPS_DIR/lib/pkgconfig
           export STAGING_DIR=$RUNNER_TEMP
           OPTIMIZE=-Oz
