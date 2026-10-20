@@ -704,7 +704,7 @@ curl_with_subst_ip()
 	tooks=$(ALL_PROXY="$ALL_PROXY" "$CURL" -w "%{time_total}" ${arg:+$arg }$connect_to "$@")
 	local ret=$?
 	local tookms=$(awk "BEGIN {print int($tooks * 1000)}")
-	[ "$PACE" -gt "$tookms" ] && msleep $(awk "BEGIN {print int($PACE - $tooks * 1000)}")
+	[ "$PACE" -gt "$tookms" ] && msleep $(($PACE - $tookms))
 	return "$ret"
 }
 curl_with_dig()
