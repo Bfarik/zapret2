@@ -56,7 +56,7 @@ target_has_luajit()
 	return 1
 }
 
-REQD_H_FILES="/usr/include/sys/capability.h /usr/include/bits/libc-header-start.h"
+REQD_H_FILES="/usr/include/sys/capability.h"
 REQD_QUEUE_1="/usr/include/sys/queue.h"
 REQD_QUEUE_2="/usr/include/x86_64-linux-gnu/sys/queue.h"
 check_h_files()
