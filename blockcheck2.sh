@@ -34,21 +34,10 @@ DVTWS2=${DVTWS2:-${ZAPRET_BASE}/nfq2/dvtws2}
 WINWS2=${WINWS2:-${ZAPRET_BASE}/nfq2/winws2}
 MDIG=${MDIG:-${ZAPRET_BASE}/mdig/mdig}
 DESYNC_MARK=0x10000000
+PACE=${PACE:-0}
 CURL_MAX_TIME=${CURL_MAX_TIME:-2}
 CURL_MAX_TIME_QUIC=${CURL_MAX_TIME_QUIC:-$CURL_MAX_TIME}
 CURL_MAX_TIME_DOH=${CURL_MAX_TIME_DOH:-2}
-# CURL_PAD pads every curl request with the given number of bytes, useful
-# for the "16 KB" whitelist-style block (see docs): that block triggers on
-# total bytes transferred on the connection, not on how much of it was an
-# actual response, so padding the request is enough to test for it even
-# against a target with no large page of its own to download - e.g. a bare
-# IP from a provider's range rather than a known blocked domain. The padding
-# is written straight to a small temp file (nothing large ever passes
-# through a shell variable, command substitution, or argument) and attached
-# as a header with curl's own @filename form of -H, which reads the file
-# instead of taking the value on the command line - unlike an equivalent
-# amount of data passed via --data/--data-binary, this doesn't conflict with
-# HEAD requests, so it composes cleanly with CURL_HTTPS_GET either way.
 CURL_PAD=${CURL_PAD:-0}
 PAD_MAX_HEADER=${PAD_MAX_HEADER:-4000}
 USER_AGENT=${USER_AGENT:-Mozilla}
@@ -63,12 +52,19 @@ IPFW_RULE_NUM=${IPFW_RULE_NUM:-$(($$ % $IPFW_RULE_MAX + 1))}
 IPFW_DIVERT_PORT=${IPFW_DIVERT_PORT:-$(($$ % 64536 + 1000))}
 QNUM=${QNUM:-$(($$ % 64536 + 1000))}
 
-PARALLEL_OUT=/tmp/zapret_parallel_$$
-HDRTEMP=/tmp/zapret-hdr-$$
-NFT_TABLE=blockcheck$$
-IPT_OUT_CHAIN=blockcheck_output_$$
-IPT_IN_CHAIN=blockcheck_input_$$
-IPT_COMMENT="-m comment --comment blockcheck_$$"
+PARALLEL_OUT_TEMPLATE=/tmp/zapret2_parallel_
+PARALLEL_OUT=$PARALLEL_OUT_TEMPLATE$$
+HDRTEMP_TEMPLATE=/tmp/zapret2-hdr-
+HDRTEMP=$HDRTEMP_TEMPLATE$$
+CURL_PAD_FILE_TEMPLATE=/tmp/zapret2-curlpad-
+
+NFT_TABLE_TEMPLATE=blockcheck2-
+NFT_TABLE=$NFT_TABLE_TEMPLATE$$
+IPT_OUT_CHAIN_TEMPLATE=blockcheck2_output_
+IPT_OUT_CHAIN=$IPT_OUT_CHAIN_TEMPLATE$$
+IPT_IN_CHAIN_TEMPLATE=blockcheck2_input_
+IPT_IN_CHAIN=$IPT_IN_CHAIN_TEMPLATE$$
+IPT_COMMENT="-m comment --comment blockcheck2_$$"
 
 DNSCHECK_DNS=${DNSCHECK_DNS:-8.8.8.8 1.1.1.1 77.88.8.1}
 DNSCHECK_DOM=${DNSCHECK_DOM:-pornhub.com ej.ru rutracker.org www.torproject.org bbc.com}
@@ -77,18 +73,35 @@ DNSCHECK_DIG1=/tmp/dig1.txt
 DNSCHECK_DIG2=/tmp/dig2.txt
 DNSCHECK_DIGS=/tmp/digs.txt
 
+GUARD_TIMER="timer_set('exit_guard',function(name,data) io.stderr:write('exit_guard\n'); os.exit(3000); end,20000,true)"
 
 unset PF_STATUS
-PF_RULES_SAVE=/tmp/pf-zapret-save.conf
+PF_RULES_SAVE=/tmp/pf-zapret2-save.conf
 
 unset ALL_PROXY
 
 apply_header_padfile()
 {
-	local n=1 left size
+	local n=1 left size f pid
+
+	# A normal exit already removes this run's own pad file (see
+	# cleanup() below), which covers Ctrl+C, a closed terminal, and
+	# a plain kill. kill -9 and crashes bypass that, as they would
+	# for any script's cleanup, so sweep any such leftover from
+	# a previous run before making this run's own - only once its PID
+	# is confirmed no longer running, so a genuinely still-running
+	# concurrent instance (different PID, its own file) is never
+	# touched
+	for f in $CURL_PAD_FILE_TEMPLATE*; do
+		[ -e "$f" ] || continue
+		pid=${f##*-}
+		case "$pid" in ''|*[!0-9]*) continue ;; esac
+		kill -0 "$pid" 2>/dev/null || rm -f "$f"
+	done
+
 	if [ "$CURL_PAD" -gt 0 ] 2>/dev/null; then
 		left=$CURL_PAD
-		CURL_PAD_FILE=/tmp/zapret-curlpad-$$
+		CURL_PAD_FILE=$CURL_PAD_FILE_TEMPLATE$$
 		rm -f "$CURL_PAD_FILE"
 		touch "$CURL_PAD_FILE"
 		while [ "$left" -ge 14 ]; do
@@ -103,7 +116,7 @@ apply_header_padfile()
 			[ "$left" -lt 14 ] && size=$(($size+$left))
 
 			printf 'X-Pad-%04d: ' $n >> "$CURL_PAD_FILE"
-			head -c $size /dev/zero | tr '\0' A >> "$CURL_PAD_FILE"
+			printf "%${size}s" | tr ' ' 'A' >> "$CURL_PAD_FILE"
 			# curl internally adds 0D0A line ending even if it's 0A in the file
 			echo >> "$CURL_PAD_FILE"
 			n=$(($n+1))
@@ -681,8 +694,13 @@ curl_with_subst_ip()
 	local connect_to="--connect-to $1::$ip${2:+:$2}" arg
 	shift ; shift ; shift;
 	[ "$CURL_VERBOSE" = 1 ] && arg="-v"
-	[ "$CURL_CMD" = 1 ] && echo $CURL ${arg:+$arg }$connect_to "$@"
-	ALL_PROXY="$ALL_PROXY" "$CURL" ${arg:+$arg }$connect_to "$@"
+	[ "$CURL_CMD" = 1 ] && echo $CURL -w "%{time_total}" ${arg:+$arg }$connect_to "$@"
+	local tooks
+	tooks=$(ALL_PROXY="$ALL_PROXY" "$CURL" -w "%{time_total}" ${arg:+$arg }$connect_to "$@")
+	local ret=$?
+	local tookms=$(awk "BEGIN {print int($tooks * 1000)}")
+	[ "$PACE" -gt "$tookms" ] && msleep $(($PACE - $tookms))
+	return "$ret"
 }
 curl_with_dig()
 {
@@ -988,22 +1006,54 @@ pktws_ipt_unprepare_udp()
 	pktws_ipt_unprepare udp $1
 }
 
+pktws_ipt_sweep()
+{
+	# remove leftovers after hard kill/crash
+
+	local f pid IPTABLES
+	case "$FWTYPE" in
+		nftables)
+			nft list tables | grep '^table inet blockcheck2-' | while IFS= read -r f; do
+				pid=${f##*-}
+				case "$pid" in ''|*[!0-9]*) continue ;; esac
+				kill -0 "$pid" 2>/dev/null || nft delete $f
+			done
+			;;
+		iptables)
+			for IPTABLES in iptables ip6tables; do
+				$IPTABLES -t mangle -S | grep -o -e "INPUT -j $IPT_IN_CHAIN_TEMPLATE[0-9]\+" -e "OUTPUT -j $IPT_OUT_CHAIN_TEMPLATE[0-9]\+" | while IFD= read -r f; do
+					pid=${f##*_}
+					case "$pid" in ''|*[!0-9]*) continue ;; esac
+					kill -0 "$pid" 2>/dev/null || $IPTABLES -t mangle -D $f
+				done
+				$IPTABLES -t mangle -S | grep -o -e "$IPT_IN_CHAIN_TEMPLATE[0-9]\+" -e "$IPT_OUT_CHAIN_TEMPLATE[0-9]\+" | sort -u | while IFD= read -r f; do
+					pid=${f##*_}
+					case "$pid" in ''|*[!0-9]*) continue ;; esac
+					kill -0 "$pid" 2>/dev/null || {
+						$IPTABLES -t mangle -F $f
+						$IPTABLES -t mangle -X $f
+					}
+				done
+			done
+			;;
+	esac
+}
 
 pktws_start()
 {
 	case "$UNAME" in
 		Linux)
-			"$NFQWS2" --uid $WS_UID:$WS_GID --fwmark=$DESYNC_MARK --qnum=$QNUM --lua-init=@"$ZAPRET_BASE/lua/zapret-lib.lua" --lua-init=@"$ZAPRET_BASE/lua/zapret-antidpi.lua" "$@" >/dev/null &
+			"$NFQWS2" --uid $WS_UID:$WS_GID --fwmark=$DESYNC_MARK --qnum=$QNUM --lua-init="$GUARD_TIMER" --lua-init=@"$ZAPRET_BASE/lua/zapret-lib.lua" --lua-init=@"$ZAPRET_BASE/lua/zapret-antidpi.lua" "$@" >/dev/null &
 			;;
 		FreeBSD|OpenBSD)
-			"$DVTWS2" --port=$IPFW_DIVERT_PORT --lua-init=@"$ZAPRET_BASE/lua/zapret-lib.lua" --lua-init=@"$ZAPRET_BASE/lua/zapret-antidpi.lua" "$@" >/dev/null &
+			"$DVTWS2" --port=$IPFW_DIVERT_PORT --lua-init="$GUARD_TIMER" --lua-init=@"$ZAPRET_BASE/lua/zapret-lib.lua" --lua-init=@"$ZAPRET_BASE/lua/zapret-antidpi.lua" "$@" >/dev/null &
 			;;
 		CYGWIN)
 			# some methods require empty acks
 			# use raw filter to filter target ip addresses in-kernel to allow multiple blockchecks running at the same time
 			# use guard timer to kill unmanaged pktws instances
 			"$WINWS2" --wf-tcp-empty=1 $WF --wf-raw-filter="$WFRAWF" \
-				--lua-init="timer_set('exit_guard',function(name,data) io.stderr:write('exit_guard\n'); os.exit(3000); end,20000,true)" \
+				--lua-init="$GUARD_TIMER" \
 				--lua-init=@"$ZAPRET_BASE/lua/zapret-lib.lua" --lua-init=@"$ZAPRET_BASE/lua/zapret-antidpi.lua" "$@" >/dev/null &
 			;;
 	esac
@@ -1083,7 +1133,7 @@ curl_test()
 				[ $REPEATS -gt 1 ] && echo 'AVAILABLE'
 			else
 				code=$?
-				[ "$SCANLEVEL" = quick ] && break
+				[ "$SCANLEVEL" = quick -o "$SCANLEVEL" = veryquick ] && break
 			fi
 		done
 	fi
@@ -1708,10 +1758,11 @@ ask_params()
 		SCANLEVEL=standard
 		[ "$BATCH" = 1 ] || {
 			echo
-			echo quick    - in multi-attempt mode skip further attempts after first failure
-			echo standard - do investigation what works on your DPI
-			echo force    - scan maximum despite of result
-			ask_list SCANLEVEL "quick standard force" "$SCANLEVEL"
+			echo veryquick - same as quick, and also stop testing more variations of a strategy family once one already succeeds
+			echo quick     - in multi-attempt mode skip further attempts after first failure
+			echo standard  - do investigation what works on your DPI
+			echo force     - scan maximum despite of result
+			ask_list SCANLEVEL "veryquick quick standard force" "$SCANLEVEL"
 		}
 	}
 
@@ -1910,6 +1961,39 @@ check_dns()
 	return $r
 }
 
+
+sweep_stale_pidfiles()
+{
+	# $1 - fixed filename prefix immediately preceding the pid
+	#
+	# A normal exit already removes this run's own PARALLEL_OUT/HDRTEMP
+	# files (unprepare_all(), further down), which covers Ctrl+C,
+	# a closed terminal, and a plain kill. kill -9 and crashes bypass
+	# that, as they would for any script's cleanup, and can leave
+	# stale files behind indefinitely, since nothing about a later run
+	# gives it any reason to know about a different PID's leftovers.
+	# Removes a matching file only once its PID (the run that created
+	# it) is confirmed no longer running, so a genuinely still-running
+	# concurrent instance - a different PID, its own files - is never
+	# touched.
+	local f pid prefix="$1"
+	for f in "$prefix"*; do
+		[ -e "$f" ] || continue
+		pid=${f#"$prefix"}
+		pid=${pid%%[!0-9]*}
+		[ -n "$pid" ] || continue
+		kill -0 "$pid" 2>/dev/null || rm -f "$f"
+	done
+}
+
+sweep_leftovers()
+{
+	sweep_stale_pidfiles $PARALLEL_OUT_TEMPLATE
+	sweep_stale_pidfiles $HDRTEMP_TEMPLATE
+	pktws_ipt_sweep
+}
+
+
 block_signals()
 {
 	# prevent signal function reenter
@@ -1962,6 +2046,7 @@ fix_sbin_path
 check_system
 check_already
 [ "$UNAME" != CYGWIN  -a "$SKIP_PKTWS" != 1 ] && require_root
+sweep_leftovers
 check_prerequisites
 trap sigint_cleanup INT
 check_dns
