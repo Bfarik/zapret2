@@ -905,7 +905,7 @@ static int win_main(void)
 			DLOG_CONDUP("logical network now present\n");
 		}
 
-		if (!windivert_init(params.windivert_filter))
+		if (!windivert_init(params.windivert_filter,params.wf_priority))
 		{
 			res=w_win32_error; goto ex;
 		}
@@ -1859,6 +1859,7 @@ static void exithelp(void)
 		" --wf-raw-filter=<filter>|@<filename>\t\t\t; partial raw windivert filter combined by AND. only one allowed\n"
 		" --wf-filter-lan=0|1\t\t\t\t\t; add excluding filter for non-global IP (default : 1)\n"
 		" --wf-filter-loopback=0|1\t\t\t\t; add excluding filter for loopback (default : 1)\n"
+		" --wf-priority=<int>\t\t\t\t\t; windivert filter priority -30000..30000 (default : 0)\n"
 		" --wf-raw=<filter>|@<filename>\t\t\t\t; full raw windivert filter string or filename. replaces --wf-tcp,--wf-udp,--wf-raw-part\n"
 		" --wf-dup-check=0|1\t\t\t\t\t; 1 (default) = do not allow duplicate winws2 instances with the same wf filter\n"
 		" --wf-save=<filename>\t\t\t\t\t; save windivert filter string to a file and exit\n"
@@ -2078,6 +2079,7 @@ enum opt_indices {
 	IDX_WF_FILTER_LAN,
 	IDX_WF_FILTER_LOOPBACK,
 	IDX_WF_DUP_CHECK,
+	IDX_WF_PRIORITY,
 	IDX_WF_SAVE,
 	IDX_SSID_FILTER,
 	IDX_SSID_FILTER_NEG,
@@ -2185,6 +2187,7 @@ static const struct option long_options[] = {
 	[IDX_WF_RAW_FILTER] = {"wf-raw-filter", required_argument, 0, 0},
 	[IDX_WF_FILTER_LAN] = {"wf-filter-lan", required_argument, 0, 0},
 	[IDX_WF_FILTER_LOOPBACK] = {"wf-filter-loopback", required_argument, 0, 0},
+	[IDX_WF_PRIORITY] = {"wf-priority", required_argument, 0, 0},
 	[IDX_WF_SAVE] = {"wf-save", required_argument, 0, 0},
 	[IDX_WF_DUP_CHECK] = {"wf-dup-check", optional_argument, 0, 0},
 	[IDX_SSID_FILTER] = {"ssid-filter", required_argument, 0, 0},
@@ -2389,13 +2392,16 @@ int main(int argc, char **argv)
 			break;
 #ifdef __linux__
 		case IDX_QNUM:
-			params.qnum = atoi(optarg);
-			if (params.qnum < 0 || params.qnum>65535)
+		{
+			int i = atoi(optarg);
+			if (i < 0 || i>65535)
 			{
-				DLOG_ERR("bad qnum\n");
+				DLOG_ERR("bad qnum. must be 0..65535\n");
 				exit_clean(1);
 			}
+			params.qnum = i;
 			break;
+		}
 		case IDX_BIND_FIX4:
 			params.bind_fix4 = true;
 			break;
@@ -2589,7 +2595,7 @@ int main(int argc, char **argv)
 			break;
 		case IDX_HOSTLIST:
 			if (bSkip) break;
-			if (!RegisterHostlist(dp, false, optarg))
+			if (!RegisterHostlist(dp, false, optarg, false))
 			{
 				DLOG_ERR("failed to register hostlist '%s'\n", optarg);
 				exit_clean(1);
@@ -2597,7 +2603,7 @@ int main(int argc, char **argv)
 			break;
 		case IDX_HOSTLIST_DOMAINS:
 			if (bSkip) break;
-			if (!anon_hl && !(anon_hl = RegisterHostlist(dp, false, NULL)))
+			if (!anon_hl && !(anon_hl = RegisterHostlist(dp, false, NULL, false)))
 			{
 				DLOG_ERR("failed to register anonymous hostlist\n");
 				exit_clean(1);
@@ -2610,7 +2616,7 @@ int main(int argc, char **argv)
 			break;
 		case IDX_HOSTLIST_EXCLUDE:
 			if (bSkip) break;
-			if (!RegisterHostlist(dp, true, optarg))
+			if (!RegisterHostlist(dp, true, optarg, false))
 			{
 				DLOG_ERR("failed to register hostlist '%s'\n", optarg);
 				exit_clean(1);
@@ -2618,7 +2624,7 @@ int main(int argc, char **argv)
 			break;
 		case IDX_HOSTLIST_EXCLUDE_DOMAINS:
 			if (bSkip) break;
-			if (!anon_hl_exclude && !(anon_hl_exclude = RegisterHostlist(dp, true, NULL)))
+			if (!anon_hl_exclude && !(anon_hl_exclude = RegisterHostlist(dp, true, NULL, false)))
 			{
 				DLOG_ERR("failed to register anonymous hostlist\n");
 				exit_clean(1);
@@ -2651,7 +2657,7 @@ int main(int argc, char **argv)
 					exit_clean(1);
 				}
 			}
-			if (!(dp->hostlist_auto = RegisterHostlist(dp, false, optarg)))
+			if (!(dp->hostlist_auto = RegisterHostlist(dp, false, optarg, true)))
 			{
 				DLOG_ERR("failed to register hostlist '%s'\n", optarg);
 				exit_clean(1);
@@ -2862,6 +2868,7 @@ int main(int argc, char **argv)
 			break;
 		case IDX_FILTER_SSID_NEG:
 			dp->filter_ssid_neg = !optarg || atoi(optarg);
+			dp->b_filter_ssid_neg = true;
 			break;
 #endif
 #ifdef __linux__
@@ -2877,6 +2884,7 @@ int main(int argc, char **argv)
 			else
 				// no mask - use the whole 32-bit value
 				dp->filter_mark_mask=0xFFFFFFFF;
+			dp->b_filter_mark=true;
 			break;
 fmark_err:
 			DLOG_ERR("filter mark or mask format error\n");
@@ -3105,6 +3113,17 @@ fmark_err:
 		case IDX_WF_FILTER_LOOPBACK:
 			wf_filter_loopback = !!atoi(optarg);
 			break;
+		case IDX_WF_PRIORITY:
+			{
+				int i = atoi(optarg);
+				if (i>30000 || i<-30000)
+				{
+					DLOG_ERR("wf_priority must be -30000..30000\n");
+					exit_clean(1);
+				}
+				params.wf_priority = (int16_t)i;
+				break;
+			}
 		case IDX_WF_SAVE:
 			strncpy(wf_save_file, optarg, sizeof(wf_save_file));
 			wf_save_file[sizeof(wf_save_file) - 1] = '\0';
@@ -3175,7 +3194,7 @@ fmark_err:
 	if (params.intercept)
 	{
 #ifdef __linux__
-		if (params.qnum < 0)
+		if (params.qnum == 0xFFFFFFFF)
 		{
 			DLOG_ERR("Need queue number (--qnum)\n");
 			exit_clean(1);
@@ -3222,10 +3241,18 @@ fmark_err:
 	{
 		dp = &dpl->dp;
 
-		if (params.server && dp->hostlist_auto)
+		if (dp->hostlist_auto)
 		{
-			DLOG_ERR("autohostlists not supported in server mode\n");
-			exit_clean(1);
+			if (params.server)
+			{
+				DLOG_ERR("autohostlists not supported in server mode\n");
+				exit_clean(1);
+			}
+			if (params.ctrack_disable)
+			{
+				DLOG_ERR("autohostlists not supported without conntrack\n");
+				exit_clean(1);
+			}
 		}
 
 #ifndef __CYGWIN__
@@ -3347,6 +3374,19 @@ fmark_err:
 		}
 	}
 #endif
+
+	bool bWarnEmpty = false;
+	LIST_FOREACH(dpl, &params.desync_profiles, next)
+	{
+		dp = &dpl->dp;
+		// profile 0 and last profile can be empty with no impact
+		if (dp->n && dp->n<desync_profile_count && dp_empty_filter(dp))
+		{
+			bWarnEmpty = true;
+			DLOG_CONDUP("WARNING ! Profile %u (%s) has empty filter. Everything after this profile is unreachable.\n",dp->n,PROFILE_NAME(dp));
+		}
+	}
+	if (bWarnEmpty) DLOG_CONDUP("\n");
 
 	if (bDry)
 	{
